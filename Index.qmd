@@ -1,0 +1,283 @@
+---
+title: "Félidos de Costa Rica"
+format: 
+  html:
+    page-layout: custom
+    theme: litera    
+    margin-top: 40px
+    margin-left: 40px
+    margin-bottom: 15px        
+    margin-right: 15px
+server: shiny
+---
+
+```{r}
+#| label: carga-paquetes
+#| context: setup
+#| warning: false
+#| message: false
+
+# Carga de paquetes
+library(tidyverse)
+library(DT)
+library(sf)
+library(leaflet)
+library(leaflet.extras)
+library(leafem)
+library(viridisLite)
+library(shiny)
+library(rsconnect)
+library(quarto)
+library(plotly)
+
+```
+
+```{r}
+#| label: carga-datos
+#| context: data
+
+# Carga de datos de registros de presencia de félidos en Costa Rica
+felidos <-
+  st_read(
+    dsn = "felidos.csv",
+    options = c(
+      "X_POSSIBLE_NAMES=decimalLongitude",
+      "Y_POSSIBLE_NAMES=decimalLatitude"
+    ),
+    quiet = TRUE
+  )
+
+# Asignación del CRS WGS84 al objeto felidos
+st_crs(felidos) <- 4326
+
+# Cambios de tipos de datos
+felidos <-
+	felidos |>
+	mutate(
+		day = as.numeric(day),
+		month = as.numeric(month),
+		year = as.numeric(year)
+	)
+```
+
+```{r}
+#| panel: fill
+
+# Tabla interactiva
+dataTableOutput("tabla")
+```
+
+```{r}
+#| label: panel-widgets-entrada
+#| panel: sidebar
+
+# Lista ordenada de especies
+# con un elemento adicional = "Todas"
+lista_especies <- unique(felidos$species)
+lista_especies <- sort(lista_especies)
+lista_especies <- c("Todas", lista_especies)
+
+# Widget de lista de selección de especies
+selectInput(
+  inputId = "especie",
+  label = "Especie",
+  choices = lista_especies,
+  selected = "Todas"
+)
+
+# Lista ordenada de años
+lista_anios <- unique(felidos$year)
+lista_anios <- sort(lista_anios)
+lista_anios <- c("Todos", lista_anios)
+
+# Widget de lista de selección de años
+selectInput(
+  inputId = "anio",      # identificador del widget
+  label = "Año",         # etiqueta de la lista
+  choices = lista_anios, # lista de opciones para seleccionar de la lista
+  selected = "Todos"     # opción seleccionada por defecto
+)
+
+# Lista ordenada de meses
+lista_meses <- unique(felidos$month)
+lista_meses <- sort(lista_meses)
+lista_meses <- c("Todos", lista_meses)
+
+# Widget de lista de selección de meses
+selectInput(
+	inputId = "mes",
+	label = "Mes",
+	choices = lista_meses,
+	selected = "Todos"
+)
+
+plotlyOutput(
+  outputId = "grafico"
+)
+```
+
+```{r}
+#| label: panel-widgets-salida
+#| panel: center
+
+h3("Distribución geoespacial")
+HTML("<p>")
+
+leafletOutput(
+	outputId = "mapa"
+)
+
+# Encabezado de nivel 3
+h3("Registros de presencia")
+# Línea vacía
+HTML("<p>")
+
+# Widget de tabla interactiva
+dataTableOutput(
+	outputId =  "tabla" # identificador del widget
+)
+```
+
+```{r}
+#| label: servidor
+#| context: server
+
+# Función reactiva para filtrar los registros de presencia de félidos
+# de acuerdo con los filtros especificados por el usuario
+filtrar_felidos <- reactive({
+  # Valor inicial del objeto que va a retornarse
+  felidos_filtrados <- felidos
+  
+  # Se realiza el filtro, solamente si el usario ha seleccionado 
+  # una opción diferente a "Todas" en la lista de selección de especies
+  if (input$especie != "Todas") {
+    felidos_filtrados <-
+      felidos_filtrados |>
+      filter(species == input$especie)
+  }
+  
+  # Filtro de años
+  if (input$anio != "Todos") {
+  	felidos_filtrados <-
+  		felidos_filtrados |>
+  		filter(year == input$anio)
+  }
+  
+  # Filtro de meses
+  if (input$mes != "Todos") {
+  	felidos_filtrados <-
+  		felidos_filtrados |>
+  		filter(month == input$mes)
+  }
+
+  return(felidos_filtrados)
+}) 
+
+# Tabla interactiva de registros de presencia
+output$tabla <- renderDataTable({
+	# Filtrado del conjunto de datos
+  felidos <- filtrar_felidos()
+  
+  # Tabla interactiva
+  felidos |>
+    st_drop_geometry() |>
+    select(species, locality, eventDate) |>
+    datatable(
+    	rownames = FALSE,
+      colnames = c("Especie", "Localidad", "Fecha"),
+      options = list(
+      	pageLength = 5,
+        language = list(url = '//cdn.datatables.net/plug-ins/1.10.11/i18n/Spanish.json')
+      )
+    )
+})
+
+# Factor de color basado en los valores únicos de especies
+colores_especies <- colorFactor(
+  palette = viridis(length(unique(felidos$species))), 
+  domain = felidos$species
+)
+
+# MAPA INTERACTIVO de registros de presencia
+output$mapa <- renderLeaflet({
+	# Filtrado del conjunto de datos
+  felidos <- filtrar_felidos()	
+	
+	leaflet() |>
+		addTiles(group = "OSM") |>
+		addCircleMarkers(
+    data = felidos,
+    stroke = F,
+    radius = 4,
+    fillColor = ~colores_especies(felidos$species),
+    fillOpacity = 1.0,
+    popup = paste(
+      paste0("<strong>Especie: </strong>", felidos$species),
+      paste0("<strong>Localidad: </strong>", felidos$locality),
+      paste0("<strong>Fecha: </strong>", felidos$eventDate),
+      paste0("<strong>Fuente: </strong>", felidos$institutionCode),
+      paste0("<a href='", felidos$occurrenceID, "'>Más información</a>"),
+      sep = '<br/>'
+    ),    
+    group = "Félidos"
+		) |>
+  addLegend(
+    position = "bottomleft",    
+    pal = colores_especies,
+    values = felidos$species,
+    title = "Especies de félidos",
+    group = "Félidos"    
+  ) |>  
+  addLayersControl(
+    baseGroups = c(
+      "OSM"
+    ),
+    overlayGroups = c("Félidos")
+  )		
+})
+```
+
+# TABLA DE DATOS GRAFICOOO
+
+```{r}
+
+
+output$grafico <- renderPlotly({
+	# Filtrado del conjunto de datos
+  felidos <- filtrar_felidos()	
+  
+  grafico_ggplot2 <-
+  	felidos |>
+  	ggplot(aes(x = fct_infreq(species))) +
+  	geom_bar(
+  		aes(
+  			text = paste0(
+  				"Registros de presencia", after_stat(count)
+  			)
+  		)
+  	) +
+  	xlab("Especie") +
+  	ylab("Registros de presencia")
+  	coord_flip()              #Para rotar las barras
+  
+  ggplotly(grafico_ggplot2, tooltip = "text") |>
+  	config(locale = "es")
+		
+})
+```
+
+```{r}
+#| label: interfaz-usuario
+
+# Este bloque de código dibuja la interfaz de usuario,
+# tanto los controles de entrada como los de salida
+
+# Widget de tipo "slider" para entrada de datos
+sliderInput(
+  inputId = "cantidad_bins", # "cantidad_bins" es el identificador del widget de entrada
+  label = 'Cantidad de bins del histograma:', 
+  min = 1, max = 50, value = 30
+)
+   
+```
+
